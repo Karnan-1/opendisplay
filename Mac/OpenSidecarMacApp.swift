@@ -23,16 +23,20 @@ struct OpenSidecarMacApp: App {
     @StateObject private var controller = SenderController.shared
 
     var body: some Scene {
-        MenuBarExtra(isInserted: Binding(
-            get: { controller.presentation == .menuBar },
-            set: { _ in }
-        )) {
-            ContentView(controller: controller, updater: appDelegate.updater)
-        } label: {
-            Image(systemName: controller.running
-                  ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+        if #available(macOS 13.0, *) {
+            MenuBarExtra(isInserted: Binding(
+                get: { controller.presentation == .menuBar },
+                set: { _ in }
+            )) {
+                ContentView(controller: controller, updater: appDelegate.updater)
+            } label: {
+                Image(systemName: controller.running
+                      ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+            }
+            .menuBarExtraStyle(.window)
+        } else {
+            Settings { EmptyView() }
         }
-        .menuBarExtraStyle(.window)
     }
 }
 
@@ -43,12 +47,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // app's lifetime here so every window (menu bar + control window) shares
     // one updater instance.
     let updater = SPUStandardUpdaterController(
-        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Hand the updater to the control window, which is built outside the
         // SwiftUI App scene (NSHostingView), so it can offer the same button.
         MainWindow.updater = updater
+        if #available(macOS 13.0, *) {
+            // The normal menu-bar scene is available.
+        } else {
+            SenderController.shared.presentation = .dock
+        }
         let presentation = SenderController.shared.presentation
         NSApp.setActivationPolicy(presentation == .dock ? .regular : .accessory)
         if presentation != .menuBar {
@@ -293,7 +302,7 @@ final class SenderController: ObservableObject {
             self.autoConnect()
         }
         Task { @MainActor in
-            try? await Task.sleep(for: .seconds(2))
+            try? await Task.sleep(nanoseconds: 2000000000)
             self.wifiAutoConnectArmed = true
             self.autoConnect()
         }
@@ -914,6 +923,11 @@ struct ContentView: View {
     // if Sparkle ever fails to start); the button just disables itself then.
     let updater: SPUStandardUpdaterController?
 
+    private var availablePresentations: [AppPresentation] {
+        if #available(macOS 13.0, *) { return AppPresentation.allCases }
+        return [.dock]
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -931,7 +945,7 @@ struct ContentView: View {
                 Spacer()
                 if controller.running {
                     Button("Disconnect All") { controller.disconnectAll() }
-                        .controlSize(.large)
+                        .controlSize(.regular)
                 }
             }
             .padding(16)
@@ -981,7 +995,7 @@ struct ContentView: View {
                     Text("Mirror").tag(CaptureMode.mirror)
                 }
                 .pickerStyle(.segmented)
-                .onChange(of: controller.mode) { controller.restartAll() }
+                .onChange(of: controller.mode) { _ in controller.restartAll() }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Picker("Quality", selection: $controller.quality) {
@@ -989,7 +1003,7 @@ struct ContentView: View {
                             Text(q.label).tag(q)
                         }
                     }
-                    .onChange(of: controller.quality) { controller.restartAll() }
+                    .onChange(of: controller.quality) { _ in controller.restartAll() }
                     Text(controller.quality.explanation)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -997,7 +1011,7 @@ struct ContentView: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     Picker("Show app in", selection: $controller.presentation) {
-                        ForEach(AppPresentation.allCases, id: \.self) { p in
+                        ForEach(availablePresentations, id: \.self) { p in
                             Text(p.label).tag(p)
                         }
                     }
@@ -1008,9 +1022,11 @@ struct ContentView: View {
                     }
                 }
 
-                LabeledContent("Display layout") {
+                HStack {
+                    Text("Display layout")
+                    Spacer()
                     Button("Arrange Displays…") {
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.displays") {
                             NSWorkspace.shared.open(url)
                         }
                     }
@@ -1044,7 +1060,7 @@ struct ContentView: View {
                     )
                 }
             }
-            .formStyle(.grouped)
+            // Default Form styling supports Monterey.
             // Scrollable + fixed panel height: MenuBarExtra windows mis-measure
             // grouped Forms (clipping on small displays), so size explicitly
             // and let the form scroll when it doesn't fit.
