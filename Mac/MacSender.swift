@@ -31,7 +31,7 @@ enum SenderTransport {
     case usb(udid: String?, port: UInt16)  // native usbmuxd dial; nil = first device
 }
 
-@available(macOS 14.0, *)
+@available(macOS 12.3, *)
 final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
 
     // Status surfaced to the UI (updated on main thread).
@@ -385,7 +385,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             await status("Screen Recording permission needed — see Permissions below")
             Log.info("Screen Recording permission missing — waiting for grant via the permission panel")
             while !CGPreflightScreenCaptureAccess() {
-                try await Task.sleep(for: .seconds(2))
+                try await Task.sleep(nanoseconds: 2000000000)
                 if stopped { return }
             }
             Log.info("Screen Recording permission granted")
@@ -442,7 +442,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                 // Event posting is trust-checked per-post, so it starts working
                 // the moment the user grants — poll just to log/report it.
                 while !AXIsProcessTrusted() {
-                    try await Task.sleep(for: .seconds(2))
+                    try await Task.sleep(nanoseconds: 2000000000)
                     if stopped { return }
                 }
                 Log.info("Accessibility permission granted — touch input live")
@@ -726,7 +726,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             // identity; fresh fallback identities get a shorter window.
             var created: VirtualDisplay?
             for attempt in 0..<(probe == 0 ? 8 : 3) {
-                if attempt > 0 { try await Task.sleep(for: .seconds(2)) }
+                if attempt > 0 { try await Task.sleep(nanoseconds: 2000000000) }
                 // A Disconnect during the retry window tore the session down. Bail
                 // before creating/assigning the display: the serial the old display
                 // held is likely free now, so a late attempt would *succeed* and
@@ -934,7 +934,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     private func scheduleCanvasRebuild() {
         canvasNeedsRebuild = true
         Task {
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(nanoseconds: 300000000)
             guard let info = self.lastHello, self.canvasNeedsRebuild else { return }
             // Still in setup: `start()` picks the flag up once setupExtend
             // returns, so a second capture path never starts beside it.
@@ -1150,7 +1150,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // A recovery round or reconfigure in flight holds the display and
         // would race the rebuild with its own setupExtend: let it finish.
         for _ in 0..<50 where captureRecoveryInFlight || reconfiguring {
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(nanoseconds: 100000000)
         }
         guard !stopped, !releasedForRenumbering, let displayID = virtualDisplay?.displayID else { return nil }
         releasedForRenumbering = true
@@ -1196,7 +1196,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
             }) {
                 return display
             }
-            try await Task.sleep(for: .milliseconds(250))
+            try await Task.sleep(nanoseconds: 250000000)
         }
         // An empty display list is a different disease from "ours is
         // missing": capture authorization is broken app-wide, and callers
@@ -1485,7 +1485,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
         // answers such defiance by saving display state that keeps this
         // identity from ever coming online again (#206). Hand it to the
         // controller to honor exactly like the in-app Disconnect.
-        if let scError = error as? SCStreamError, scError.code == .userStopped,
+        if #available(macOS 15.0, *),
+           let scError = error as? SCStreamError, scError.code == .userStopped,
            consoleIsInteractive {
             Task { @MainActor in self.onCaptureStoppedByUser?() }
             return
@@ -2457,7 +2458,7 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
                     // Rebuild after a short debounce so a flurry of rotations
                     // or capability updates settles into one selection.
                     Task {
-                        try? await Task.sleep(for: .milliseconds(300))
+                        try? await Task.sleep(nanoseconds: 300000000)
                         guard let current = self.lastHello,
                               !self.streamSelectionInputsChanged(from: info,
                                                                  to: current) else { return }
@@ -2696,6 +2697,8 @@ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
     /// On `queue`: whether this stream has been delivering some other
     /// display's picture for a sustained stretch (#391).
     private func capturingAnotherDisplay(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        // Newer frame metadata is optional on the Monterey backport.
+        guard #available(macOS 15.0, *) else { return false }
         let displayID = captureDisplayID
         guard mode == .extend, displayID != 0,
               wrongDisplayReattaches < maxWrongDisplayReattaches,
