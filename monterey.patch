@@ -1,0 +1,260 @@
+--- a/Mac/MacSender.swift
++++ b/Mac/MacSender.swift
+@@ -31,7 +31,7 @@
+     case usb(udid: String?, port: UInt16)  // native usbmuxd dial; nil = first device
+ }
+ 
+-@available(macOS 14.0, *)
++@available(macOS 12.3, *)
+ final class MacSender: NSObject, SCStreamOutput, SCStreamDelegate {
+ 
+     // Status surfaced to the UI (updated on main thread).
+@@ -385,7 +385,7 @@
+             await status("Screen Recording permission needed — see Permissions below")
+             Log.info("Screen Recording permission missing — waiting for grant via the permission panel")
+             while !CGPreflightScreenCaptureAccess() {
+-                try await Task.sleep(for: .seconds(2))
++                try await Task.sleep(nanoseconds: 2000000000)
+                 if stopped { return }
+             }
+             Log.info("Screen Recording permission granted")
+@@ -442,7 +442,7 @@
+                 // Event posting is trust-checked per-post, so it starts working
+                 // the moment the user grants — poll just to log/report it.
+                 while !AXIsProcessTrusted() {
+-                    try await Task.sleep(for: .seconds(2))
++                    try await Task.sleep(nanoseconds: 2000000000)
+                     if stopped { return }
+                 }
+                 Log.info("Accessibility permission granted — touch input live")
+@@ -726,7 +726,7 @@
+             // identity; fresh fallback identities get a shorter window.
+             var created: VirtualDisplay?
+             for attempt in 0..<(probe == 0 ? 8 : 3) {
+-                if attempt > 0 { try await Task.sleep(for: .seconds(2)) }
++                if attempt > 0 { try await Task.sleep(nanoseconds: 2000000000) }
+                 // A Disconnect during the retry window tore the session down. Bail
+                 // before creating/assigning the display: the serial the old display
+                 // held is likely free now, so a late attempt would *succeed* and
+@@ -934,7 +934,7 @@
+     private func scheduleCanvasRebuild() {
+         canvasNeedsRebuild = true
+         Task {
+-            try? await Task.sleep(for: .milliseconds(300))
++            try? await Task.sleep(nanoseconds: 300000000)
+             guard let info = self.lastHello, self.canvasNeedsRebuild else { return }
+             // Still in setup: `start()` picks the flag up once setupExtend
+             // returns, so a second capture path never starts beside it.
+@@ -1150,7 +1150,7 @@
+         // A recovery round or reconfigure in flight holds the display and
+         // would race the rebuild with its own setupExtend: let it finish.
+         for _ in 0..<50 where captureRecoveryInFlight || reconfiguring {
+-            try? await Task.sleep(for: .milliseconds(100))
++            try? await Task.sleep(nanoseconds: 100000000)
+         }
+         guard !stopped, !releasedForRenumbering, let displayID = virtualDisplay?.displayID else { return nil }
+         releasedForRenumbering = true
+@@ -1196,7 +1196,7 @@
+             }) {
+                 return display
+             }
+-            try await Task.sleep(for: .milliseconds(250))
++            try await Task.sleep(nanoseconds: 250000000)
+         }
+         // An empty display list is a different disease from "ours is
+         // missing": capture authorization is broken app-wide, and callers
+@@ -1485,7 +1485,8 @@
+         // answers such defiance by saving display state that keeps this
+         // identity from ever coming online again (#206). Hand it to the
+         // controller to honor exactly like the in-app Disconnect.
+-        if let scError = error as? SCStreamError, scError.code == .userStopped,
++        if #available(macOS 15.0, *),
++           let scError = error as? SCStreamError, scError.code == .userStopped,
+            consoleIsInteractive {
+             Task { @MainActor in self.onCaptureStoppedByUser?() }
+             return
+@@ -2457,7 +2458,7 @@
+                     // Rebuild after a short debounce so a flurry of rotations
+                     // or capability updates settles into one selection.
+                     Task {
+-                        try? await Task.sleep(for: .milliseconds(300))
++                        try? await Task.sleep(nanoseconds: 300000000)
+                         guard let current = self.lastHello,
+                               !self.streamSelectionInputsChanged(from: info,
+                                                                  to: current) else { return }
+@@ -2696,6 +2697,8 @@
+     /// On `queue`: whether this stream has been delivering some other
+     /// display's picture for a sustained stretch (#391).
+     private func capturingAnotherDisplay(_ sampleBuffer: CMSampleBuffer) -> Bool {
++        // Newer frame metadata is optional on the Monterey backport.
++        guard #available(macOS 15.0, *) else { return false }
+         let displayID = captureDisplayID
+         guard mode == .extend, displayID != 0,
+               wrongDisplayReattaches < maxWrongDisplayReattaches,
+--- a/Mac/OpenSidecarMacApp.swift
++++ b/Mac/OpenSidecarMacApp.swift
+@@ -23,16 +23,20 @@
+     @StateObject private var controller = SenderController.shared
+ 
+     var body: some Scene {
+-        MenuBarExtra(isInserted: Binding(
+-            get: { controller.presentation == .menuBar },
+-            set: { _ in }
+-        )) {
+-            ContentView(controller: controller, updater: appDelegate.updater)
+-        } label: {
+-            Image(systemName: controller.running
+-                  ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+-        }
+-        .menuBarExtraStyle(.window)
++        if #available(macOS 13.0, *) {
++            MenuBarExtra(isInserted: Binding(
++                get: { controller.presentation == .menuBar },
++                set: { _ in }
++            )) {
++                ContentView(controller: controller, updater: appDelegate.updater)
++            } label: {
++                Image(systemName: controller.running
++                      ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
++            }
++            .menuBarExtraStyle(.window)
++        } else {
++            Settings { EmptyView() }
++        }
+     }
+ }
+ 
+@@ -43,12 +47,17 @@
+     // app's lifetime here so every window (menu bar + control window) shares
+     // one updater instance.
+     let updater = SPUStandardUpdaterController(
+-        startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
++        startingUpdater: false, updaterDelegate: nil, userDriverDelegate: nil)
+ 
+     func applicationDidFinishLaunching(_ notification: Notification) {
+         // Hand the updater to the control window, which is built outside the
+         // SwiftUI App scene (NSHostingView), so it can offer the same button.
+         MainWindow.updater = updater
++        if #available(macOS 13.0, *) {
++            // The normal menu-bar scene is available.
++        } else {
++            SenderController.shared.presentation = .dock
++        }
+         let presentation = SenderController.shared.presentation
+         NSApp.setActivationPolicy(presentation == .dock ? .regular : .accessory)
+         if presentation != .menuBar {
+@@ -293,7 +302,7 @@
+             self.autoConnect()
+         }
+         Task { @MainActor in
+-            try? await Task.sleep(for: .seconds(2))
++            try? await Task.sleep(nanoseconds: 2000000000)
+             self.wifiAutoConnectArmed = true
+             self.autoConnect()
+         }
+@@ -914,6 +923,11 @@
+     // if Sparkle ever fails to start); the button just disables itself then.
+     let updater: SPUStandardUpdaterController?
+ 
++    private var availablePresentations: [AppPresentation] {
++        if #available(macOS 13.0, *) { return AppPresentation.allCases }
++        return [.dock]
++    }
++
+     var body: some View {
+         VStack(spacing: 0) {
+             // Header
+@@ -931,7 +945,7 @@
+                 Spacer()
+                 if controller.running {
+                     Button("Disconnect All") { controller.disconnectAll() }
+-                        .controlSize(.large)
++                        .controlSize(.regular)
+                 }
+             }
+             .padding(16)
+@@ -981,7 +995,7 @@
+                     Text("Mirror").tag(CaptureMode.mirror)
+                 }
+                 .pickerStyle(.segmented)
+-                .onChange(of: controller.mode) { controller.restartAll() }
++                .onChange(of: controller.mode) { _ in controller.restartAll() }
+ 
+                 VStack(alignment: .leading, spacing: 4) {
+                     Picker("Quality", selection: $controller.quality) {
+@@ -989,7 +1003,7 @@
+                             Text(q.label).tag(q)
+                         }
+                     }
+-                    .onChange(of: controller.quality) { controller.restartAll() }
++                    .onChange(of: controller.quality) { _ in controller.restartAll() }
+                     Text(controller.quality.explanation)
+                         .font(.caption)
+                         .foregroundStyle(.secondary)
+@@ -997,7 +1011,7 @@
+ 
+                 VStack(alignment: .leading, spacing: 4) {
+                     Picker("Show app in", selection: $controller.presentation) {
+-                        ForEach(AppPresentation.allCases, id: \.self) { p in
++                        ForEach(availablePresentations, id: \.self) { p in
+                             Text(p.label).tag(p)
+                         }
+                     }
+@@ -1008,9 +1022,11 @@
+                     }
+                 }
+ 
+-                LabeledContent("Display layout") {
++                HStack {
++                    Text("Display layout")
++                    Spacer()
+                     Button("Arrange Displays…") {
+-                        if let url = URL(string: "x-apple.systempreferences:com.apple.Displays-Settings.extension") {
++                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.displays") {
+                             NSWorkspace.shared.open(url)
+                         }
+                     }
+@@ -1044,7 +1060,7 @@
+                     )
+                 }
+             }
+-            .formStyle(.grouped)
++            // Default Form styling supports Monterey.
+             // Scrollable + fixed panel height: MenuBarExtra windows mis-measure
+             // grouped Forms (clipping on small displays), so size explicitly
+             // and let the form scroll when it doesn't fit.
+--- a/project.yml
++++ b/project.yml
+@@ -43,7 +43,7 @@
+   OpenSidecarMac:
+     type: application
+     platform: macOS
+-    deploymentTarget: "14.0"
++    deploymentTarget: "12.3"
+     sources:
+       - Mac
+       - Shared
+@@ -71,9 +71,11 @@
+         # verifies update signatures against this public key before installing.
+         SUPublicEDKey: rYxlIePmwzi2bRo/qIsuY2TqTnQ34li2gQhJpGBiumw=
+         # Check for updates automatically in the background on a schedule.
+-        SUEnableAutomaticChecks: true
+-    settings:
+-      base:
++        SUEnableAutomaticChecks: false
++    settings:
++      base:
++        ARCHS: x86_64
++        ONLY_ACTIVE_ARCH: NO
+         PRODUCT_BUNDLE_IDENTIFIER: com.peetzweg.opensidecar.mac
+         PRODUCT_NAME: OpenDisplay
+         BUNDLE_DISPLAY_NAME: OpenDisplay
+@@ -148,7 +150,7 @@
+   OpenSidecarMacTests:
+     type: bundle.unit-test
+     platform: macOS
+-    deploymentTarget: "14.0"
++    deploymentTarget: "12.3"
+     sources:
+       - MacTests
+       - Mac/DisplayArrangement.swift
